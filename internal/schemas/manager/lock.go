@@ -14,11 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package xrd contains commands for working with CompositeResourceDefinitions.
-package xrd
+package manager
 
-// Cmd contains XRD subcommands.
-type Cmd struct {
-	Convert  convertCmd  `cmd:"" help:"Convert an XRD to a Kubernetes CRD."`
-	Generate generateCmd `cmd:"" help:"Generate an XRD from a Composite Resource (XR) or SimpleSchema definition."`
+const lockFileName = ".lock.json"
+
+// lock tracks the versions of sources whose schemas are present in the
+// manager. It is persisted to the manager's filesystem.
+type lock struct {
+	Packages map[string]string `json:"packages"`
+}
+
+func newLock() *lock {
+	return &lock{
+		Packages: make(map[string]string),
+	}
 }

@@ -14,11 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package xrd contains commands for working with CompositeResourceDefinitions.
-package xrd
-
-// Cmd contains XRD subcommands.
-type Cmd struct {
-	Convert  convertCmd  `cmd:"" help:"Convert an XRD to a Kubernetes CRD."`
-	Generate generateCmd `cmd:"" help:"Generate an XRD from a Composite Resource (XR) or SimpleSchema definition."`
-}
+// Package xpkg contains CLI-specific functionality for working with Crossplane
+// packages.
+package xpkg

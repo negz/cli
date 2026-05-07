@@ -14,11 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package xrd contains commands for working with CompositeResourceDefinitions.
-package xrd
+// Package function contains commands for working with Functions.
+package function
 
-// Cmd contains XRD subcommands.
+// Cmd contains Function subcommands.
 type Cmd struct {
-	Convert  convertCmd  `cmd:"" help:"Convert an XRD to a Kubernetes CRD."`
-	Generate generateCmd `cmd:"" help:"Generate an XRD from a Composite Resource (XR) or SimpleSchema definition."`
+	Generate generateCmd `cmd:"" help:"Generate a Function for a Composition."`
 }

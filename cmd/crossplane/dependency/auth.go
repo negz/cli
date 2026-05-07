@@ -14,11 +14,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package xrd contains commands for working with CompositeResourceDefinitions.
-package xrd
+package dependency
 
-// Cmd contains XRD subcommands.
-type Cmd struct {
-	Convert  convertCmd  `cmd:"" help:"Convert an XRD to a Kubernetes CRD."`
-	Generate generateCmd `cmd:"" help:"Generate an XRD from a Composite Resource (XR) or SimpleSchema definition."`
+import (
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/http"
+)
+
+type gitAuthProvider struct {
+	username string
+	token    string
+}
+
+func (g *gitAuthProvider) GetAuthMethod() (transport.AuthMethod, error) {
+	if g.token != "" {
+		return &http.BasicAuth{
+			Username: g.username,
+			Password: g.token,
+		}, nil
+	}
+	return nil, nil
 }

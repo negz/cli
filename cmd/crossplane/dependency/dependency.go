@@ -14,11 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package xrd contains commands for working with CompositeResourceDefinitions.
-package xrd
+// Package dependency contains commands for managing project dependencies.
+package dependency
 
-// Cmd contains XRD subcommands.
+// Cmd contains commands for dependency management.
 type Cmd struct {
-	Convert  convertCmd  `cmd:"" help:"Convert an XRD to a Kubernetes CRD."`
-	Generate generateCmd `cmd:"" help:"Generate an XRD from a Composite Resource (XR) or SimpleSchema definition."`
+	Add         addCmd         `cmd:"" help:"Add a dependency to the current project."`
+	UpdateCache updateCacheCmd `cmd:"" help:"Update the dependency cache for the current project."`
+	CleanCache  cleanCacheCmd  `cmd:"" help:"Clean the dependency cache."`
 }

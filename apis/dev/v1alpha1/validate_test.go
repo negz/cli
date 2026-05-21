@@ -285,6 +285,169 @@ func TestValidate(t *testing.T) {
 				"dependency 0: k8s: version must not be empty",
 			},
 		},
+		"ValidDirectoryFunction": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Source:    FunctionSourceDirectory,
+						Directory: &FunctionDirectory{Name: "fn-one"},
+					}},
+				},
+			},
+		},
+		"ValidTarballFunction": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Source:  FunctionSourceTarball,
+						Tarball: &FunctionTarball{Name: "fn-two", PathPrefix: "build/fn-two"},
+					}},
+				},
+			},
+		},
+		"FunctionMissingSource": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Directory: &FunctionDirectory{Name: "fn-one"},
+					}},
+				},
+			},
+			expectedErrors: []string{
+				"function 0: source must not be empty",
+			},
+		},
+		"FunctionUnknownSource": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Source:    "Mystery",
+						Directory: &FunctionDirectory{Name: "fn-one"},
+					}},
+				},
+			},
+			expectedErrors: []string{
+				`function 0: source "Mystery" is not supported`,
+			},
+		},
+		"FunctionDirectorySourceMissingDirectory": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Source:  FunctionSourceDirectory,
+						Tarball: &FunctionTarball{Name: "fn-one", PathPrefix: "build/fn-one"},
+					}},
+				},
+			},
+			expectedErrors: []string{
+				`function 0: directory: source "Directory" requires the directory field to be set`,
+			},
+		},
+		"FunctionTarballSourceMissingTarball": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Source:    FunctionSourceTarball,
+						Directory: &FunctionDirectory{Name: "fn-one"},
+					}},
+				},
+			},
+			expectedErrors: []string{
+				`function 0: tarball: source "Tarball" requires the tarball field to be set`,
+			},
+		},
+		"FunctionMultipleSources": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Source:    FunctionSourceDirectory,
+						Directory: &FunctionDirectory{Name: "fn-one"},
+						Tarball:   &FunctionTarball{Name: "fn-one", PathPrefix: "build/fn-one"},
+					}},
+				},
+			},
+			expectedErrors: []string{
+				"function 0: exactly one source (directory or tarball) must be specified",
+			},
+		},
+		"FunctionDirectoryEmptyName": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Source:    FunctionSourceDirectory,
+						Directory: &FunctionDirectory{},
+					}},
+				},
+			},
+			expectedErrors: []string{
+				"function 0: directory: name must not be empty",
+			},
+		},
+		"FunctionTarballEmptyPathPrefix": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Source:  FunctionSourceTarball,
+						Tarball: &FunctionTarball{Name: "fn-one"},
+					}},
+				},
+			},
+			expectedErrors: []string{
+				"function 0: tarball: pathPrefix must not be empty",
+			},
+		},
+		"FunctionTarballAbsolutePathPrefix": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{{
+						Source:  FunctionSourceTarball,
+						Tarball: &FunctionTarball{Name: "fn-one", PathPrefix: "/abs/prefix"},
+					}},
+				},
+			},
+			expectedErrors: []string{
+				"function 0: tarball: pathPrefix must be relative",
+			},
+		},
+		"FunctionDuplicateName": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-project"},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Functions: []Function{
+						{Source: FunctionSourceDirectory, Directory: &FunctionDirectory{Name: "shared"}},
+						{Source: FunctionSourceTarball, Tarball: &FunctionTarball{Name: "shared", PathPrefix: "build/shared"}},
+					},
+				},
+			},
+			expectedErrors: []string{
+				`function 1: name "shared" is already used by function 0`,
+			},
+		},
 	}
 
 	for name, tc := range tcs {

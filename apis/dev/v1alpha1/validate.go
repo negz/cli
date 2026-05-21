@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
@@ -73,6 +75,23 @@ func (s *ProjectSpec) Validate() error {
 		if err := dep.Validate(); err != nil {
 			errs = append(errs, errors.Wrapf(err, "dependency %d", i))
 		}
+	}
+
+	// Validate functions. Names must be unique across the list, regardless of
+	// source, since the function name is used to derive both the package
+	// metadata name and the OCI repository.
+	seen := make(map[string]int, len(s.Functions))
+	for i, fn := range s.Functions {
+		if err := fn.Validate(); err != nil {
+			errs = append(errs, errors.Wrapf(err, "function %d", i))
+			continue
+		}
+		name := fn.Name()
+		if first, ok := seen[name]; ok {
+			errs = append(errs, errors.Errorf("function %d: name %q is already used by function %d", i, name, first))
+			continue
+		}
+		seen[name] = i
 	}
 
 	return errors.Join(errs...)
@@ -168,6 +187,82 @@ func (k *K8sDependency) Validate() error {
 
 	if k.Version == "" {
 		errs = append(errs, errors.New("version must not be empty"))
+	}
+
+	return errors.Join(errs...)
+}
+
+// Validate validates a Function declaration.
+func (f *Function) Validate() error {
+	var errs []error
+
+	// Count non-nil sources to enforce that exactly one matches the
+	// discriminator.
+	sourceCount := 0
+	if f.Directory != nil {
+		sourceCount++
+	}
+	if f.Tarball != nil {
+		sourceCount++
+	}
+	if sourceCount != 1 {
+		errs = append(errs, errors.New("exactly one source (directory or tarball) must be specified"))
+	}
+
+	switch f.Source {
+	case FunctionSourceDirectory:
+		if err := f.Directory.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("directory: %w", err))
+		}
+	case FunctionSourceTarball:
+		if err := f.Tarball.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("tarball: %w", err))
+		}
+	case "":
+		errs = append(errs, errors.New("source must not be empty"))
+	default:
+		errs = append(errs, errors.Errorf("source %q is not supported, must be one of %q or %q", f.Source, FunctionSourceDirectory, FunctionSourceTarball))
+	}
+
+	return errors.Join(errs...)
+}
+
+// Validate validates a FunctionDirectory. A nil receiver is invalid; this is
+// the failure mode when a function is declared with source Directory but no
+// directory field set.
+func (d *FunctionDirectory) Validate() error {
+	if d == nil {
+		return errors.Errorf("source %q requires the directory field to be set", FunctionSourceDirectory)
+	}
+
+	var errs []error
+	if d.Name == "" {
+		errs = append(errs, errors.New("name must not be empty"))
+	} else if msgs := validation.IsDNS1123Subdomain(d.Name); len(msgs) > 0 {
+		errs = append(errs, errors.Errorf("name %q is not a valid DNS-1123 subdomain: %v", d.Name, msgs))
+	}
+
+	return errors.Join(errs...)
+}
+
+// Validate validates a FunctionTarball. A nil receiver is invalid; this is
+// the failure mode when a function is declared with source Tarball but no
+// tarball field set.
+func (t *FunctionTarball) Validate() error {
+	if t == nil {
+		return errors.Errorf("source %q requires the tarball field to be set", FunctionSourceTarball)
+	}
+
+	var errs []error
+	if t.Name == "" {
+		errs = append(errs, errors.New("name must not be empty"))
+	} else if msgs := validation.IsDNS1123Subdomain(t.Name); len(msgs) > 0 {
+		errs = append(errs, errors.Errorf("name %q is not a valid DNS-1123 subdomain: %v", t.Name, msgs))
+	}
+	if t.PathPrefix == "" {
+		errs = append(errs, errors.New("pathPrefix must not be empty"))
+	} else if filepath.IsAbs(t.PathPrefix) {
+		errs = append(errs, errors.New("pathPrefix must be relative"))
 	}
 
 	return errors.Join(errs...)

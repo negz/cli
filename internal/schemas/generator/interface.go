@@ -20,6 +20,7 @@ package generator
 
 import (
 	"context"
+	"slices"
 
 	"github.com/spf13/afero"
 
@@ -33,7 +34,9 @@ type Interface interface {
 	GenerateFromOpenAPI(ctx context.Context, fs afero.Fs, runner runner.SchemaRunner) (afero.Fs, error)
 }
 
-// AllLanguages returns generators for all supported languages.
+// AllLanguages returns generators for all supported languages. The set of
+// supported language identifiers is defined by
+// devv1alpha1.SupportedSchemaLanguages.
 func AllLanguages() []Interface {
 	return []Interface{
 		&goGenerator{},
@@ -41,4 +44,20 @@ func AllLanguages() []Interface {
 		&kclGenerator{},
 		&pythonGenerator{},
 	}
+}
+
+// Filter returns the subset of generators whose language identifier appears
+// in langs. The order of generators in the result matches the order of all.
+// If langs is empty, all generators are returned unchanged.
+func Filter(all []Interface, langs []string) []Interface {
+	if len(langs) == 0 {
+		return all
+	}
+	out := make([]Interface, 0, len(all))
+	for _, g := range all {
+		if slices.Contains(langs, g.Language()) {
+			out = append(out, g)
+		}
+	}
+	return out
 }

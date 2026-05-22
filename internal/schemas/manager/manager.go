@@ -30,6 +30,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
@@ -143,7 +144,7 @@ func (m *Manager) Generate(ctx context.Context, source Source) (map[string]afero
 
 func postProcessForLanguage(language string, langFS afero.Fs) error {
 	switch language {
-	case "json":
+	case devv1alpha1.SchemaLanguageJSON:
 		if err := jsonBuildIndexSchema(langFS); err != nil {
 			return errors.Wrap(err, "failed to build index schema for JSON")
 		}

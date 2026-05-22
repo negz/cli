@@ -29,6 +29,7 @@ import (
 	"github.com/crossplane/cli/v2/internal/async"
 	"github.com/crossplane/cli/v2/internal/dependency"
 	"github.com/crossplane/cli/v2/internal/project/projectfile"
+	"github.com/crossplane/cli/v2/internal/schemas/generator"
 	"github.com/crossplane/cli/v2/internal/terminal"
 	clixpkg "github.com/crossplane/cli/v2/internal/xpkg"
 
@@ -83,6 +84,7 @@ func (c *updateCacheCmd) Run(logger logging.Logger, sp terminal.SpinnerPrinter) 
 
 	opts := []dependency.ManagerOption{
 		dependency.WithProjectFile(c.ProjectFile),
+		dependency.WithSchemaGenerators(generator.Filter(generator.AllLanguages(), proj.Spec.Schemas.GetLanguages())),
 		dependency.WithXpkgClient(client),
 		dependency.WithResolver(resolver),
 	}

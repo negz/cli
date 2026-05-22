@@ -42,6 +42,7 @@ import (
 
 	xpv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
+	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	xcrd "github.com/crossplane/cli/v2/internal/crd"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
@@ -56,7 +57,7 @@ const (
 type kclGenerator struct{}
 
 func (kclGenerator) Language() string {
-	return "kcl"
+	return devv1alpha1.SchemaLanguageKCL
 }
 
 // GenerateFromCRD generates KCL schema files from the XRDs and CRDs fromFS.

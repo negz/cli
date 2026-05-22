@@ -140,6 +140,51 @@ func TestValidate(t *testing.T) {
 				"architectures must not be empty",
 			},
 		},
+		"ValidSchemaLanguages": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Schemas: &ProjectSchemas{
+						Languages: []string{"python"},
+					},
+				},
+			},
+		},
+		"EmptySchemaLanguages": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Schemas: &ProjectSchemas{
+						Languages: []string{},
+					},
+				},
+			},
+			expectedErrors: []string{
+				"schemas.languages must not be empty when specified",
+			},
+		},
+		"UnsupportedSchemaLanguage": {
+			input: &Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+				Spec: ProjectSpec{
+					Repository: "xpkg.upbound.io/acmeco/my-project",
+					Schemas: &ProjectSchemas{
+						Languages: []string{"python", "fortran"},
+					},
+				},
+			},
+			expectedErrors: []string{
+				`schemas.languages[1]: "fortran" is not a supported schema language`,
+			},
+		},
 		"ValidAPIDependency": {
 			input: &Project{
 				ObjectMeta: metav1.ObjectMeta{

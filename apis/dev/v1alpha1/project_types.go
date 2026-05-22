@@ -258,13 +258,14 @@ type FunctionDirectory struct {
 // pre-built single-platform OCI image tarballs (as produced by `docker save`,
 // Nix's dockerTools.buildImage, Bazel's oci_tarball, ko --tarball, etc.).
 //
-// The CLI expects one tarball per target architecture, named according to the
-// convention `<pathPrefix>-<arch>.tar` and resolved relative to the project
-// root. For example, with PathPrefix "build/function-b" and project
-// architectures [amd64, arm64], the CLI loads:
+// The CLI expects one tarball per target architecture, named according to
+// the convention `<pathPrefix>-<arch>.tar` or `<pathPrefix>-<arch>.tar.gz`,
+// resolved relative to the project root. The CLI prefers the plain `.tar`
+// when both are present. For example, with PathPrefix "build/function-b" and
+// project architectures [amd64, arm64], the CLI looks for:
 //
-//	build/function-b-amd64.tar
-//	build/function-b-arm64.tar
+//	build/function-b-amd64.tar (or .tar.gz)
+//	build/function-b-arm64.tar (or .tar.gz)
 type FunctionTarball struct {
 	// Name is the name of the function. It is used to derive the OCI
 	// repository for the function's package as `<project-repository>_<name>`.
@@ -272,6 +273,8 @@ type FunctionTarball struct {
 
 	// PathPrefix is the prefix of the per-architecture runtime image
 	// tarballs, relative to the project root. For each target architecture
-	// the CLI loads the file at `<pathPrefix>-<arch>.tar`.
+	// the CLI loads either `<pathPrefix>-<arch>.tar` or
+	// `<pathPrefix>-<arch>.tar.gz`, preferring the former when both are
+	// present.
 	PathPrefix string `json:"pathPrefix"`
 }

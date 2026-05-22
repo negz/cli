@@ -17,8 +17,10 @@ limitations under the License.
 package project
 
 import (
+	"compress/gzip"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -538,6 +540,37 @@ func TestLoadTarballRuntime(t *testing.T) {
 			},
 			want: want{archs: []string{"amd64"}},
 		},
+		"GzippedTarball": {
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar.gz": "amd64",
+				},
+				archs: []string{"amd64"},
+			},
+			want: want{archs: []string{"amd64"}},
+		},
+		"MixedPlainAndGzipped": {
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar":    "amd64",
+					"fn-arm64.tar.gz": "arm64",
+				},
+				archs: []string{"amd64", "arm64"},
+			},
+			want: want{archs: []string{"amd64", "arm64"}},
+		},
+		"PlainPreferredOverGzipped": {
+			// When both .tar and .tar.gz exist for the same architecture,
+			// the plain .tar is used.
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar":    "amd64",
+					"fn-amd64.tar.gz": "arm64", // mismatched on purpose to prove it isn't read.
+				},
+				archs: []string{"amd64"},
+			},
+			want: want{archs: []string{"amd64"}},
+		},
 	}
 
 	for name, tc := range tcs {
@@ -579,7 +612,7 @@ func archsOf(t *testing.T, imgs []v1.Image) []string {
 
 // writeRuntimeTar writes a single-platform Docker-style image tarball to the
 // given path on fsys containing an empty image whose config records the given
-// architecture.
+// architecture. If the path ends with ".tar.gz" the tarball is gzipped.
 func writeRuntimeTar(t *testing.T, fsys afero.Fs, path, arch string) {
 	t.Helper()
 
@@ -598,7 +631,18 @@ func writeRuntimeTar(t *testing.T, fsys afero.Fs, path, arch string) {
 	}
 	defer f.Close()
 
-	if err := tarball.Write(tag, img, f); err != nil {
+	if !strings.HasSuffix(path, ".gz") {
+		if err := tarball.Write(tag, img, f); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	gz := gzip.NewWriter(f)
+	if err := tarball.Write(tag, img, gz); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

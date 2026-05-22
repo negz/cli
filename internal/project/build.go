@@ -18,6 +18,7 @@ limitations under the License.
 package project
 
 import (
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -544,18 +545,21 @@ func (b *realBuilder) buildDirectoryRuntime(ctx context.Context, projectFS, func
 }
 
 // loadTarballRuntime reads one pre-built single-platform OCI image tarball per
-// target architecture, following the naming convention
-// `<pathPrefix>-<arch>.tar`. The tarball format is the Docker-style image
-// tarball produced by `docker save`, Nix's dockerTools.buildImage, Bazel's
-// oci_tarball, `ko build --tarball`, etc.
+// target architecture. For each architecture it looks for, in order:
+//
+//   - <pathPrefix>-<arch>.tar
+//   - <pathPrefix>-<arch>.tar.gz
+//
+// The tarball format is the Docker-style image tarball produced by
+// `docker save`, Nix's dockerTools.buildImage, Bazel's oci_tarball,
+// `ko build --tarball`, etc. The gzipped variant is what most Nix image
+// builders emit by default.
 func loadTarballRuntime(projectFS afero.Fs, tb *devv1alpha1.FunctionTarball, architectures []string) ([]v1.Image, error) {
 	images := make([]v1.Image, 0, len(architectures))
 	for _, arch := range architectures {
-		rel := fmt.Sprintf("%s-%s.tar", tb.PathPrefix, arch)
-
-		img, err := tarball.Image(fsOpener(projectFS, rel), nil)
+		img, rel, err := loadRuntimeImage(projectFS, tb.PathPrefix, arch)
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to load runtime image for architecture %q from %q", arch, rel)
+			return nil, err
 		}
 
 		// The image's own config records the platform it was built for. If
@@ -583,6 +587,77 @@ func fsOpener(fsys afero.Fs, path string) tarball.Opener {
 	return func() (io.ReadCloser, error) {
 		return fsys.Open(path)
 	}
+}
+
+// loadRuntimeImage loads the runtime image for a single architecture. It tries
+// each candidate tarball in turn, preferring the plain .tar over the gzipped
+// .tar.gz, and loads the first one that exists. It returns the loaded image and
+// the relative path it was loaded from (for error messages).
+//
+// The tarballs are read through the project filesystem rather than from a real
+// on-disk path, so loading works the same whether the project FS is an
+// afero.BasePathFs or an in-memory FS in tests.
+func loadRuntimeImage(projectFS afero.Fs, prefix, arch string) (v1.Image, string, error) {
+	candidates := []struct {
+		path   string
+		opener func(afero.Fs, string) tarball.Opener
+	}{
+		{path: fmt.Sprintf("%s-%s.tar", prefix, arch), opener: fsOpener},
+		{path: fmt.Sprintf("%s-%s.tar.gz", prefix, arch), opener: gzipOpener},
+	}
+
+	tried := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		tried = append(tried, c.path)
+
+		exists, err := afero.Exists(projectFS, c.path)
+		if err != nil {
+			return nil, c.path, errors.Wrapf(err, "failed to stat runtime image %q", c.path)
+		}
+		if !exists {
+			continue
+		}
+
+		img, err := tarball.Image(c.opener(projectFS, c.path), nil)
+		if err != nil {
+			return nil, c.path, errors.Wrapf(err, "failed to load runtime image for architecture %q from %q", arch, c.path)
+		}
+		return img, c.path, nil
+	}
+
+	return nil, tried[0], errors.Errorf("no runtime image found for architecture %q: looked for %v", arch, tried)
+}
+
+// gzipOpener returns a tarball.Opener that reads a gzipped tar file from the
+// given filesystem. Like fsOpener it can be called repeatedly; each call
+// returns a fresh decompressing reader that reads the file from the beginning.
+func gzipOpener(fsys afero.Fs, path string) tarball.Opener {
+	return func() (io.ReadCloser, error) {
+		f, err := fsys.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		return gzipReadCloser{Reader: gz, file: f}, nil
+	}
+}
+
+// gzipReadCloser ties together a gzip.Reader and the underlying file so that
+// closing the gzip reader also closes the file.
+type gzipReadCloser struct {
+	*gzip.Reader
+
+	file afero.File
+}
+
+// Close closes both the gzip reader and the underlying file, joining any errors
+// so neither failure is lost.
+func (g gzipReadCloser) Close() error {
+	return errors.Join(g.Reader.Close(), g.file.Close())
 }
 
 func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string, exclude []string) error {

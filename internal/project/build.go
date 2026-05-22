@@ -18,8 +18,10 @@ limitations under the License.
 package project
 
 import (
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -539,19 +541,21 @@ func (b *realBuilder) buildDirectoryRuntime(ctx context.Context, projectFS, func
 }
 
 // loadTarballRuntime reads one pre-built single-platform OCI image tarball per
-// target architecture, following the naming convention
-// `<pathPrefix>-<arch>.tar`. The tarball format is the Docker-style image
-// tarball produced by `docker save`, Nix's dockerTools.buildImage, Bazel's
-// oci_tarball, `ko build --tarball`, etc.
+// target architecture. For each architecture it looks for, in order:
+//
+//   - <pathPrefix>-<arch>.tar
+//   - <pathPrefix>-<arch>.tar.gz
+//
+// The tarball format is the Docker-style image tarball produced by
+// `docker save`, Nix's dockerTools.buildImage, Bazel's oci_tarball,
+// `ko build --tarball`, etc. The gzipped variant is what most Nix image
+// builders emit by default.
 func loadTarballRuntime(projectFS afero.Fs, tb *devv1alpha1.FunctionTarball, architectures []string) ([]v1.Image, error) {
 	images := make([]v1.Image, 0, len(architectures))
 	for _, arch := range architectures {
-		rel := fmt.Sprintf("%s-%s.tar", tb.PathPrefix, arch)
-		path := resolveProjectPath(projectFS, rel)
-
-		img, err := tarball.ImageFromPath(path, nil)
+		img, rel, err := loadRuntimeImage(projectFS, tb.PathPrefix, arch)
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to load runtime image for architecture %q from %q", arch, rel)
+			return nil, err
 		}
 
 		// The image's own config records the platform it was built for. If
@@ -569,6 +573,72 @@ func loadTarballRuntime(projectFS afero.Fs, tb *devv1alpha1.FunctionTarball, arc
 		images = append(images, img)
 	}
 	return images, nil
+}
+
+// loadRuntimeImage loads the runtime image for a single architecture, trying
+// the plain .tar file first and falling back to a gzipped .tar.gz file. It
+// returns the loaded image and the relative path (for error messages).
+func loadRuntimeImage(projectFS afero.Fs, prefix, arch string) (v1.Image, string, error) {
+	plain := fmt.Sprintf("%s-%s.tar", prefix, arch)
+	if exists, err := afero.Exists(projectFS, plain); err != nil {
+		return nil, plain, errors.Wrapf(err, "failed to stat runtime image %q", plain)
+	} else if exists {
+		img, err := tarball.ImageFromPath(resolveProjectPath(projectFS, plain), nil)
+		if err != nil {
+			return nil, plain, errors.Wrapf(err, "failed to load runtime image for architecture %q from %q", arch, plain)
+		}
+		return img, plain, nil
+	}
+
+	gzipped := fmt.Sprintf("%s-%s.tar.gz", prefix, arch)
+	if exists, err := afero.Exists(projectFS, gzipped); err != nil {
+		return nil, gzipped, errors.Wrapf(err, "failed to stat runtime image %q", gzipped)
+	} else if exists {
+		img, err := tarball.Image(gzipOpener(resolveProjectPath(projectFS, gzipped)), nil)
+		if err != nil {
+			return nil, gzipped, errors.Wrapf(err, "failed to load runtime image for architecture %q from %q", arch, gzipped)
+		}
+		return img, gzipped, nil
+	}
+
+	return nil, plain, errors.Errorf("no runtime image found for architecture %q: looked for %q and %q", arch, plain, gzipped)
+}
+
+// gzipOpener returns a tarball.Opener that reads a gzipped tar file. It can
+// be called repeatedly; each call returns a fresh decompressing reader that
+// reads the file from the beginning. tarball.Image calls its opener multiple
+// times - once for the manifest and once per layer - so re-decompression is
+// required.
+func gzipOpener(path string) tarball.Opener {
+	return func() (io.ReadCloser, error) {
+		f, err := os.Open(path) //nolint:gosec // Path is provided by the project author.
+		if err != nil {
+			return nil, err
+		}
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		return gzipReadCloser{Reader: gz, file: f}, nil
+	}
+}
+
+// gzipReadCloser ties together a gzip.Reader and the underlying file so that
+// closing the gzip reader also closes the file.
+type gzipReadCloser struct {
+	*gzip.Reader
+
+	file *os.File
+}
+
+func (g gzipReadCloser) Close() error {
+	gerr := g.Reader.Close()
+	ferr := g.file.Close()
+	if gerr != nil {
+		return gerr
+	}
+	return ferr
 }
 
 // resolveProjectPath returns the real on-disk path for a path that is

@@ -45,6 +45,27 @@ const (
 	FunctionSourceTarball = "Tarball"
 )
 
+// Schema language constants. These are the values accepted in
+// ProjectSchemas.Languages. Each corresponds to a schema generator in
+// internal/schemas/generator.
+const (
+	SchemaLanguageGo     = "go"
+	SchemaLanguageJSON   = "json"
+	SchemaLanguageKCL    = "kcl"
+	SchemaLanguagePython = "python"
+)
+
+// SupportedSchemaLanguages returns the set of language identifiers accepted
+// in ProjectSchemas.Languages.
+func SupportedSchemaLanguages() []string {
+	return []string{
+		SchemaLanguageGo,
+		SchemaLanguageJSON,
+		SchemaLanguageKCL,
+		SchemaLanguagePython,
+	}
+}
+
 // Project defines a Crossplane Project, which can be built into a Crossplane
 // Configuration package.
 //
@@ -87,6 +108,9 @@ type ProjectSpec struct {
 	// Architectures indicates for which architectures embedded functions should
 	// be built. If not specified, it defaults to [amd64, arm64].
 	Architectures []string `json:"architectures,omitempty"`
+	// Schemas configures language-specific schema generation for the
+	// project's XRDs and declared dependencies.
+	Schemas *ProjectSchemas `json:"schemas,omitempty"`
 	// ImageConfigs configure how images are fetched during
 	// development. Currently, only rewriting is supported; other options will
 	// be silently ignored. Note that these configs are for development only;
@@ -103,6 +127,24 @@ type ProjectPackageMetadata struct {
 	License     string `json:"license,omitempty"`
 	Description string `json:"description,omitempty"`
 	Readme      string `json:"readme,omitempty"`
+}
+
+// ProjectSchemas configures language-specific schema generation. Schemas are
+// produced both for the project's own XRDs and for its declared dependencies.
+type ProjectSchemas struct {
+	// Languages restricts schema generation to the listed languages.
+	// Supported values are "go", "json", "kcl", and "python". If not
+	// specified, schemas are generated for all supported languages.
+	Languages []string `json:"languages,omitempty"`
+}
+
+// GetLanguages returns the configured schema languages, or nil if no Schemas
+// config is set. It is safe to call on a nil receiver.
+func (s *ProjectSchemas) GetLanguages() []string {
+	if s == nil {
+		return nil
+	}
+	return s.Languages
 }
 
 // ProjectPaths configures the locations of various parts of the project, for

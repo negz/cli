@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -71,6 +72,8 @@ func (s *ProjectSpec) Validate() error {
 		errs = append(errs, errors.New("architectures must not be empty"))
 	}
 
+	errs = append(errs, s.Schemas.Validate()...)
+
 	// Validate dependencies
 	for i, dep := range s.Dependencies {
 		if err := dep.Validate(); err != nil {
@@ -96,6 +99,30 @@ func (s *ProjectSpec) Validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// Validate returns errors for an invalid ProjectSchemas. A nil receiver is
+// valid (it means "generate schemas for all languages"); an explicitly empty
+// Languages list is rejected because it would disable all schema generation,
+// which is almost certainly a mistake.
+func (s *ProjectSchemas) Validate() []error {
+	if s == nil {
+		return nil
+	}
+	if s.Languages == nil {
+		return nil
+	}
+	if len(s.Languages) == 0 {
+		return []error{errors.New("schemas.languages must not be empty when specified")}
+	}
+	supported := SupportedSchemaLanguages()
+	var errs []error
+	for i, lang := range s.Languages {
+		if !slices.Contains(supported, lang) {
+			errs = append(errs, errors.Errorf("schemas.languages[%d]: %q is not a supported schema language; set it to one of %v", i, lang, supported))
+		}
+	}
+	return errs
 }
 
 // Validate validates a dependency.

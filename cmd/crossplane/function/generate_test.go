@@ -336,6 +336,59 @@ func TestRunErrors(t *testing.T) {
 	}
 }
 
+func TestValidateLanguageAgainstSchemas(t *testing.T) {
+	cases := map[string]struct {
+		functionLang     string
+		schemaLangs      []string
+		wantErrSubstring string
+	}{
+		"NoSchemaRestriction": {
+			functionLang: "python",
+			schemaLangs:  nil,
+		},
+		"LanguageAllowed": {
+			functionLang: "python",
+			schemaLangs:  []string{"python"},
+		},
+		"GoTemplatingMapsToJSON": {
+			functionLang: "go-templating",
+			schemaLangs:  []string{"json"},
+		},
+		"GoMapsToGo": {
+			functionLang: "go",
+			schemaLangs:  []string{"go"},
+		},
+		"LanguageExcluded": {
+			functionLang:     "python",
+			schemaLangs:      []string{"go"},
+			wantErrSubstring: "the project only generates",
+		},
+		"GoTemplatingExcludedWhenOnlyGo": {
+			functionLang:     "go-templating",
+			schemaLangs:      []string{"go"},
+			wantErrSubstring: `add "json"`,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := validateLanguageAgainstSchemas(tc.functionLang, tc.schemaLangs)
+			if tc.wantErrSubstring == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErrSubstring)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSubstring) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tc.wantErrSubstring)
+			}
+		})
+	}
+}
+
 func TestAddCompositionStep(t *testing.T) {
 	cases := map[string]struct {
 		start         []apiextv1.PipelineStep

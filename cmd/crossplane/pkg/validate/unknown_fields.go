@@ -25,18 +25,19 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
-// validateUnknownFields Validates the resource's unknown fields against the given schema and returns a list of errors.
+// validateUnknownFields validates the resource's unknown fields against the
+// given schema and returns a list of errors.
 func validateUnknownFields(mr map[string]any, sch *schema.Structural) field.ErrorList {
 	opts := schema.UnknownFieldPathOptions{
 		TrackUnknownFieldPaths: true, // to get the list of pruned unknown fields
 	}
+	errs := field.ErrorList{}
 
 	uf := pruning.PruneWithOptions(mr, sch, true, opts)
-	errs := make(field.ErrorList, len(uf))
-	for i, f := range uf {
+	for _, f := range uf {
 		strPath := strings.Split(f, ".")
 		child := strPath[len(strPath)-1]
-		errs[i] = field.Invalid(field.NewPath(f), child, fmt.Sprintf("unknown field: \"%s\"", child))
+		errs = append(errs, field.Invalid(field.NewPath(f), child, fmt.Sprintf("unknown field: \"%s\"", child)))
 	}
 
 	return errs

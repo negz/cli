@@ -19,7 +19,6 @@ package validate
 import (
 	"context"
 	"fmt"
-	"io"
 
 	ext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -36,9 +35,90 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 )
 
-const (
-	errWriteOutput = "cannot write output"
-)
+// SchemaValidate performs schema validation and returns structured results.
+//
+// This is the processing-only API: no I/O is performed, allowing programmatic
+// consumers to inspect the result directly or hand it to a renderer. The
+// returned error is non-nil only for setup failures (for example, a CRD that
+// cannot be converted or compiled); per-resource validation failures are
+// reported via ResourceValidationResult.Status and .Errors, not via the error.
+func SchemaValidate(ctx context.Context, resources []*unstructured.Unstructured, crds []*extv1.CustomResourceDefinition) (*ValidationResult, error) { //nolint:gocognit // validation has many branches
+	schemaValidators, structurals, err := newValidatorsAndStructurals(crds)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot create schema validators")
+	}
+
+	result := &ValidationResult{
+		Resources: make([]ResourceValidationResult, 0, len(resources)),
+	}
+
+	for _, r := range resources {
+		gvk := r.GetObjectKind().GroupVersionKind()
+		rvr := ResourceValidationResult{
+			APIVersion: gvk.GroupVersion().String(),
+			Kind:       gvk.Kind,
+			Name:       getResourceName(r),
+			Namespace:  r.GetNamespace(),
+		}
+
+		sv, ok := schemaValidators[gvk]
+		s := structurals[gvk]
+
+		if !ok {
+			rvr.Status = ValidationStatusMissingSchema
+			result.Resources = append(result.Resources, rvr)
+			continue
+		}
+
+		if err := applyDefaults(r, gvk, crds); err != nil {
+			rvr.Status = ValidationStatusDefaultingFailed
+			rvr.Errors = append(rvr.Errors, FieldValidationError{
+				Type:    FieldErrorTypeDefaulting,
+				Message: err.Error(),
+			})
+			result.Resources = append(result.Resources, rvr)
+			continue
+		}
+
+		for _, v := range sv {
+			for _, e := range validation.ValidateCustomResource(nil, r, *v) {
+				rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeSchema))
+			}
+			for _, e := range validateUnknownFields(r.UnstructuredContent(), s) {
+				rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeUnknownField))
+			}
+
+			celValidator := cel.NewValidator(s, true, celconfig.PerCallLimit)
+			celErrs, _ := celValidator.Validate(ctx, nil, s, r.Object, nil, celconfig.PerCallLimit)
+			for _, e := range celErrs {
+				rvr.Errors = append(rvr.Errors, fieldErrorToFieldValidationError(e, FieldErrorTypeCEL))
+			}
+		}
+
+		if len(rvr.Errors) > 0 {
+			rvr.Status = ValidationStatusInvalid
+		} else {
+			rvr.Status = ValidationStatusValid
+		}
+		result.Resources = append(result.Resources, rvr)
+	}
+
+	result.Summary = computeSummary(result.Resources)
+	return result, nil
+}
+
+// ResultError returns an error summarizing the outcome of validation, or nil
+// if validation succeeded. This preserves the historical error semantics of
+// SchemaValidation for programmatic consumers who want a boolean pass/fail.
+func ResultError(result *ValidationResult, errorOnMissingSchemas bool) error {
+	if result.Summary.Invalid > 0 {
+		return errors.New("could not validate all resources")
+	}
+	if errorOnMissingSchemas && result.Summary.MissingSchemas > 0 {
+		return errors.New("could not validate all resources, schema(s) missing")
+	}
+	return nil
+}
 
 func newValidatorsAndStructurals(crds []*extv1.CustomResourceDefinition) (map[runtimeschema.GroupVersionKind][]*validation.SchemaValidator, map[runtimeschema.GroupVersionKind]*schema.Structural, error) {
 	validators := map[runtimeschema.GroupVersionKind][]*validation.SchemaValidator{}
@@ -94,87 +174,33 @@ func newValidatorsAndStructurals(crds []*extv1.CustomResourceDefinition) (map[ru
 	return validators, structurals, nil
 }
 
-// SchemaValidation validates the resources against the given CRDs.
-func SchemaValidation(ctx context.Context, resources []*unstructured.Unstructured, crds []*extv1.CustomResourceDefinition, errorOnMissingSchemas bool, skipSuccessLogs bool, w io.Writer) error { //nolint:gocognit // printing the output increases the cyclomatic complexity a little bit
-	schemaValidators, structurals, err := newValidatorsAndStructurals(crds)
-	if err != nil {
-		return errors.Wrap(err, "cannot create schema validators")
+// fieldErrorToFieldValidationError converts a k8s field.Error into our structured type.
+func fieldErrorToFieldValidationError(e *field.Error, errType string) FieldValidationError {
+	out := FieldValidationError{
+		Type:    errType,
+		Field:   e.Field,
+		Message: e.Error(),
 	}
+	if e.BadValue != nil {
+		out.Value = e.BadValue
+	}
+	return out
+}
 
-	failure, missingSchemas := 0, 0
-
-	for _, r := range resources {
-		gvk := r.GetObjectKind().GroupVersionKind()
-		sv, ok := schemaValidators[gvk]
-		s := structurals[gvk] // if we have a schema validator, we should also have a structural
-
-		if !ok {
-			missingSchemas++
-
-			if _, err := fmt.Fprintf(w, "[!] could not find CRD/XRD for: %s\n", r.GroupVersionKind().String()); err != nil {
-				return errors.Wrap(err, errWriteOutput)
-			}
-
-			continue
-		}
-
-		if err := applyDefaults(r, gvk, crds); err != nil {
-			if _, err := fmt.Fprintf(w, "[!] failed to apply defaults for %s, %s: %v\n", r.GroupVersionKind().String(), getResourceName(r), err); err != nil {
-				return errors.Wrap(err, errWriteOutput)
-			}
-		}
-
-		rf := 0
-
-		re := field.ErrorList{}
-		for _, v := range sv {
-			re = append(re, validation.ValidateCustomResource(nil, r, *v)...)
-
-			re = append(re, validateUnknownFields(r.UnstructuredContent(), s)...)
-			for _, e := range re {
-				rf++
-
-				if _, err := fmt.Fprintf(w, "[x] schema validation error %s, %s : %s\n", r.GroupVersionKind().String(), getResourceName(r), e.Error()); err != nil {
-					return errors.Wrap(err, errWriteOutput)
-				}
-			}
-
-			celValidator := cel.NewValidator(s, true, celconfig.PerCallLimit)
-
-			re, _ = celValidator.Validate(ctx, nil, s, r.Object, nil, celconfig.PerCallLimit)
-			for _, e := range re {
-				rf++
-
-				if _, err := fmt.Fprintf(w, "[x] CEL validation error %s, %s : %s\n", r.GroupVersionKind().String(), getResourceName(r), e.Error()); err != nil {
-					return errors.Wrap(err, errWriteOutput)
-				}
-			}
-
-			if rf == 0 {
-				if !skipSuccessLogs {
-					if _, err := fmt.Fprintf(w, "[✓] %s, %s validated successfully\n", r.GroupVersionKind().String(), getResourceName(r)); err != nil {
-						return errors.Wrap(err, errWriteOutput)
-					}
-				}
-			} else {
-				failure++
-			}
+// computeSummary calculates aggregate counts from per-resource results.
+func computeSummary(results []ResourceValidationResult) ValidationSummary {
+	s := ValidationSummary{Total: len(results)}
+	for _, r := range results {
+		switch r.Status {
+		case ValidationStatusValid:
+			s.Valid++
+		case ValidationStatusInvalid, ValidationStatusDefaultingFailed:
+			s.Invalid++
+		case ValidationStatusMissingSchema:
+			s.MissingSchemas++
 		}
 	}
-
-	if _, err := fmt.Fprintf(w, "Total %d resources: %d missing schemas, %d success cases, %d failure cases\n", len(resources), missingSchemas, len(resources)-failure-missingSchemas, failure); err != nil {
-		return errors.Wrap(err, errWriteOutput)
-	}
-
-	if failure > 0 {
-		return errors.New("could not validate all resources")
-	}
-
-	if errorOnMissingSchemas && missingSchemas > 0 {
-		return errors.New("could not validate all resources, schema(s) missing")
-	}
-
-	return nil
+	return s
 }
 
 func getResourceName(r *unstructured.Unstructured) string {
@@ -186,7 +212,8 @@ func getResourceName(r *unstructured.Unstructured) string {
 	return r.GetAnnotations()[xcrd.AnnotationKeyCompositionResourceName]
 }
 
-// applyDefaults applies default values from the CRD schema to the unstructured resource.
+// applyDefaults applies default values from the CRD schema to the unstructured
+// resource.
 func applyDefaults(resource *unstructured.Unstructured, gvk runtimeschema.GroupVersionKind, crds []*extv1.CustomResourceDefinition) error {
 	var matchingCRD *extv1.CustomResourceDefinition
 

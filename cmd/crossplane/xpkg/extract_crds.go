@@ -17,7 +17,6 @@ limitations under the License.
 package xpkg
 
 import (
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,6 +35,8 @@ import (
 	"github.com/crossplane/cli/v2/cmd/crossplane/common/load"
 	"github.com/crossplane/cli/v2/cmd/crossplane/validate"
 	"github.com/crossplane/cli/v2/internal/schemas/generator"
+
+	_ "embed"
 )
 
 //go:embed help/extract-crds.md

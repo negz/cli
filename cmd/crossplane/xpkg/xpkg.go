@@ -31,7 +31,7 @@ type Cmd struct {
 	// Keep subcommands sorted alphabetically.
 	Batch       batchCmd       `cmd:"" help:"Batch build and push a family of provider packages."`
 	Build       buildCmd       `cmd:"" help:"Build a new package."`
-	ExtractCrds extractCRDsCmd `cmd:"" name:"extract-crds" help:"Download CRDs from package dependencies."`
+	ExtractCrds extractCRDsCmd `cmd:"" help:"Download CRDs from package dependencies."                                                                       name:"extract-crds"`
 	Init        initCmd        `cmd:"" help:"Initialize a new package from a template."`
 	Install     installCmd     `cmd:"" help:"Install a package in a control plane."`
 	Push        pushCmd        `cmd:"" help:"Push a package to a registry."`

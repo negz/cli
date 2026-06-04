@@ -93,13 +93,17 @@ func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (f
 		e.network = networkName
 
 		injectNetworkAnnotation(fns, networkName)
+
+		cleanup := func() { //nolint:contextcheck // Detached context for cleanup.
+			_ = removeRenderNetwork(context.Background(), networkID)
+		}
+
+		return cleanup, nil
 	}
 
-	cleanup := func() { //nolint:contextcheck // Detached context for cleanup.
-		_ = removeRenderNetwork(context.Background(), networkID)
-	}
-
-	return cleanup, nil
+	// e.network was pre-configured by the caller (e.g. from a function
+	// annotation). We don't own the network, so there is nothing to clean up.
+	return func() {}, nil
 }
 
 // Render marshals the request, runs it through a Docker container, and returns

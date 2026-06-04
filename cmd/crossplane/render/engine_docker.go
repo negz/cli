@@ -53,8 +53,7 @@ func (realContainerRunner) Run(ctx context.Context, img string, opts ...docker.R
 type dockerRenderEngine struct {
 	// image is the Crossplane Docker image reference.
 	image string
-	// network is the Docker network to connect the container to. When set,
-	// the container joins this network so it can reach function containers.
+	// network is the Docker network to connect the container to.
 	network string
 
 	log logging.Logger

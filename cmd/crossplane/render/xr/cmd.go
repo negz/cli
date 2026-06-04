@@ -220,7 +220,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		}
 	}
 
-	network := ""
+	var network string
 	for _, annotation := range c.FunctionAnnotations {
 		parts := strings.SplitN(annotation, "=", 2)
 		if len(parts) != 2 {

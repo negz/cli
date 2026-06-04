@@ -50,13 +50,13 @@ type getCRDsCmd struct {
 	Extensions string `arg:"" help:"Extension sources as a comma-separated list of files, directories, or '-' for standard input."`
 
 	// Flags. Keep them in alphabetical order.
-	CacheDir        string `default:"~/.crossplane/cache"                                                                help:"Absolute path to the cache directory where downloaded schemas are stored."                predictor:"directory"`
+	CacheDir        string `default:"~/.crossplane/cache"                                                                help:"Absolute path to the cache directory holding downloaded schemas."                         predictor:"directory"`
 	CleanCache      bool   `help:"Clean the cache directory before downloading package schemas."`
-	CrossplaneImage string `help:"Specify the Crossplane image to be used for fetching the built-in schemas."`
+	CrossplaneImage string `help:"Specify the Crossplane image for fetching the built-in schemas."`
 	Flat            bool   `help:"Write files to a flat directory instead of organizing by group and version."`
 	JSONSchema      bool   `help:"Write JSON Schema files instead of CRDs. Useful for YAML language server integration." name:"json-schema"`
-	NoCache         bool   `help:"Disable caching entirely. Schemas are downloaded every time and not stored."`
-	OutputDir       string `default:"."                                                                                  help:"Directory where CRD or JSON Schema files will be written. Defaults to current directory." name:"output-dir"     short:"o"`
+	NoCache         bool   `help:"Disable caching entirely. The command downloads schemas every time without storing them."`
+	OutputDir       string `default:"."                                                                                  help:"Directory that receives the CRD or JSON Schema files. Defaults to current directory."     name:"output-dir"     short:"o"`
 	UpdateCache     bool   `default:"false"                                                                              help:"Update cached schemas by downloading the latest version that satisfies a constraint."`
 
 	fs afero.Fs

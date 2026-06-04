@@ -4,7 +4,7 @@ files to the specified output directory. With `--json-schema`, it extracts the
 OpenAPI v3 schemas from CRDs and writes them as JSON Schema files suitable for
 use with YAML language servers.
 
-By default, files are organized by API group and version (e.g.,
+By default, the command organizes files by API group and version (for example,
 `<group>/<version>/<kind>.{yaml|json}`). Use `--flat` to write all files
 directly to the output directory without subfolders.
 

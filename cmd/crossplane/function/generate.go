@@ -25,6 +25,7 @@ import (
 	"io/fs"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/template"
 
@@ -103,12 +104,43 @@ func (c *generateCmd) AfterApply() error {
 	}
 	c.proj = proj
 
+	if err := validateLanguageAgainstSchemas(c.Language, proj.Spec.Schemas.GetLanguages()); err != nil {
+		return err
+	}
+
 	c.functionsFS = afero.NewBasePathFs(c.projFS, proj.Spec.Paths.Functions)
 	c.schemasFS = afero.NewBasePathFs(c.projFS, proj.Spec.Paths.Schemas)
 	c.fsPath = path.Join(proj.Spec.Paths.Functions, c.Name)
 	c.projectRepository = proj.Spec.Repository
 	c.projectSource = proj.Spec.Source
 	return nil
+}
+
+// validateLanguageAgainstSchemas refuses to generate a function in a language
+// whose schemas the project doesn't generate. Such a function would have no
+// models to import, which is surprising, so we fail up front rather than
+// scaffolding a function that can't compile. An empty schemaLangs means the
+// project generates all languages (matching generator.Filter), so any function
+// language is fine.
+func validateLanguageAgainstSchemas(functionLang string, schemaLangs []string) error {
+	if len(schemaLangs) == 0 {
+		return nil
+	}
+	required := functionSchemaLanguage(functionLang)
+	if !slices.Contains(schemaLangs, required) {
+		return errors.Errorf("cannot generate a %q function: the project only generates %v schemas; add %q to spec.schemas.languages or choose a different language", functionLang, schemaLangs, required)
+	}
+	return nil
+}
+
+// functionSchemaLanguage returns the schema language a generated function in
+// the given function language consumes. Most function languages map to a
+// like-named schema language; go-templating consumes the JSON schema.
+func functionSchemaLanguage(functionLang string) string {
+	if functionLang == "go-templating" {
+		return v1alpha1.SchemaLanguageJSON
+	}
+	return functionLang
 }
 
 // Run generates a function scaffold.
@@ -124,7 +156,7 @@ func (c *generateCmd) Run(sp terminal.SpinnerPrinter) error {
 	}
 	schemaMgr := manager.New(
 		c.schemasFS,
-		generator.AllLanguages(),
+		generator.Filter(generator.AllLanguages(), c.proj.Spec.Schemas.GetLanguages()),
 		runner.NewRealSchemaRunner(runner.WithImageConfig(c.proj.Spec.ImageConfigs)),
 	)
 

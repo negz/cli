@@ -18,8 +18,10 @@ limitations under the License.
 package project
 
 import (
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -29,6 +31,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/spf13/afero"
 	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -180,7 +183,14 @@ func (b *realBuilder) Build(ctx context.Context, project *devv1alpha1.Project, p
 		}
 	}
 
-	functionsSource := afero.NewBasePathFs(projectFS, project.Spec.Paths.Functions)
+	// Determine the set of functions to build. If the project explicitly
+	// declares a Functions list we use it verbatim. Otherwise we auto-discover
+	// by listing subdirectories of the functions path.
+	fns, err := resolveFunctions(project, projectFS)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to resolve functions")
+	}
+
 	apisSource := projectFS
 	apiExcludes := []string{
 		project.Spec.Paths.Examples,
@@ -248,9 +258,9 @@ func (b *realBuilder) Build(ctx context.Context, project *devv1alpha1.Project, p
 		o.eventCh.SendEvent("Generating schemas", async.EventStatusSuccess)
 	}
 
-	// Find and build embedded functions.
+	// Build the resolved functions.
 	o.log.Debug("Building functions")
-	imgMap, deps, err := b.buildFunctions(ctx, projectFS, functionsSource, project, o.projectBasePath, o.eventCh)
+	imgMap, deps, err := b.buildFunctions(ctx, projectFS, project, fns, o.projectBasePath, o.eventCh)
 	if err != nil {
 		return nil, err
 	}
@@ -301,50 +311,60 @@ func (b *realBuilder) Build(ctx context.Context, project *devv1alpha1.Project, p
 	return imgMap, nil
 }
 
-// buildFunctions builds the embedded functions found in directories at the top
-// level of the provided filesystem.
-func (b *realBuilder) buildFunctions(ctx context.Context, projectFS, fromFS afero.Fs, project *devv1alpha1.Project, basePath string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, error) {
+// resolveFunctions returns the list of functions to build for the project. If
+// the project explicitly declares functions, that list is returned verbatim.
+// Otherwise it auto-discovers Directory-source functions by listing
+// subdirectories of the project's functions path.
+func resolveFunctions(project *devv1alpha1.Project, projectFS afero.Fs) ([]devv1alpha1.Function, error) {
+	if len(project.Spec.Functions) > 0 {
+		return project.Spec.Functions, nil
+	}
+
+	infos, err := afero.ReadDir(projectFS, project.Spec.Paths.Functions)
+	switch {
+	case os.IsNotExist(err):
+		return nil, nil
+	case err != nil:
+		return nil, errors.Wrap(err, "failed to list functions directory")
+	}
+
+	fns := make([]devv1alpha1.Function, 0, len(infos))
+	for _, info := range infos {
+		if !info.IsDir() {
+			continue
+		}
+		fns = append(fns, devv1alpha1.Function{
+			Source:    devv1alpha1.FunctionSourceDirectory,
+			Directory: &devv1alpha1.FunctionDirectory{Name: info.Name()},
+		})
+	}
+	return fns, nil
+}
+
+// buildFunctions builds the given list of embedded functions.
+func (b *realBuilder) buildFunctions(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fns []devv1alpha1.Function, basePath string, eventCh async.EventChannel) (ImageTagMap, []xpmetav1.Dependency, error) {
 	var (
 		imgMap = make(map[name.Tag]v1.Image)
 		imgMu  sync.Mutex
 	)
 
-	infos, err := afero.ReadDir(fromFS, "/")
-	switch {
-	case os.IsNotExist(err):
-		return imgMap, nil, nil
-	case err != nil:
-		return nil, nil, errors.Wrap(err, "failed to list functions directory")
-	}
-
-	fnDirs := make([]string, 0, len(infos))
-	for _, info := range infos {
-		if info.IsDir() {
-			fnDirs = append(fnDirs, info.Name())
-		}
-	}
-
-	deps := make([]xpmetav1.Dependency, len(fnDirs))
+	deps := make([]xpmetav1.Dependency, len(fns))
 	eg, ctx := errgroup.WithContext(ctx)
 
 	sem := make(chan struct{}, b.maxConcurrency)
-	for i, fnName := range fnDirs {
+	for i, fn := range fns {
 		eg.Go(func() error {
 			sem <- struct{}{}
 			defer func() {
 				<-sem
 			}()
 
+			fnName := fn.Name()
 			eventText := fmt.Sprintf("Building function %s", fnName)
 			eventCh.SendEvent(eventText, async.EventStatusStarted)
 
 			fnRepo := fmt.Sprintf("%s_%s", project.Spec.Repository, fnName)
-			fnFS := afero.NewBasePathFs(fromFS, fnName)
-			fnBasePath := ""
-			if basePath != "" {
-				fnBasePath = filepath.Join(basePath, project.Spec.Paths.Functions, fnName)
-			}
-			imgs, err := b.buildFunction(ctx, projectFS, fnFS, project, fnName, fnBasePath)
+			imgs, err := b.buildFunction(ctx, projectFS, project, fn, basePath)
 			if err != nil {
 				eventCh.SendEvent(eventText, async.EventStatusFailure)
 				return errors.Wrapf(err, "failed to build function %q", fnName)
@@ -387,18 +407,19 @@ func (b *realBuilder) buildFunctions(ctx context.Context, projectFS, fromFS afer
 		})
 	}
 
-	err = eg.Wait()
-	if err != nil {
+	if err := eg.Wait(); err != nil {
 		return nil, nil, err
 	}
 
 	return imgMap, deps, nil
 }
 
-// buildFunction builds images for a single function whose source resides in the
-// given filesystem.
-func (b *realBuilder) buildFunction(ctx context.Context, projectFS, fromFS afero.Fs, project *devv1alpha1.Project, fnName string, basePath string) ([]v1.Image, error) {
-	fn := &xpmetav1.Function{
+// buildFunction builds the package images for a single function. It resolves
+// the function's runtime images (either by building from source or by loading
+// a pre-built tarball) and then wraps each one with the package metadata.
+func (b *realBuilder) buildFunction(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fn devv1alpha1.Function, basePath string) ([]v1.Image, error) {
+	fnName := fn.Name()
+	meta := &xpmetav1.Function{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: xpmetav1.SchemeGroupVersion.String(),
 			Kind:       xpmetav1.FunctionKind,
@@ -414,7 +435,7 @@ func (b *realBuilder) buildFunction(ctx context.Context, projectFS, fromFS afero
 		},
 	}
 	metaFS := afero.NewMemMapFs()
-	y, err := yaml.Marshal(fn)
+	y, err := yaml.Marshal(meta)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to marshal function metadata")
 	}
@@ -423,18 +444,24 @@ func (b *realBuilder) buildFunction(ctx context.Context, projectFS, fromFS afero
 		return nil, errors.Wrap(err, "failed to write function metadata")
 	}
 
+	// Source the examples from the function's own directory if it's a
+	// Directory-source function. Tarball-source functions don't have a source
+	// directory under functions/, so they have no examples to ship.
 	examplesParser := parser.NewEchoBackend("")
-	examplesExist, err := afero.IsDir(fromFS, "/examples")
-	switch {
-	case err == nil, os.IsNotExist(err):
-	default:
-		return nil, errors.Wrap(err, "failed to check for examples")
-	}
-	if examplesExist {
-		examplesParser = parser.NewFsBackend(fromFS,
-			parser.FsDir("/examples"),
-			parser.FsFilters(parser.SkipNotYAML()),
-		)
+	if fn.Source == devv1alpha1.FunctionSourceDirectory {
+		examplesDir := filepath.Join(project.Spec.Paths.Functions, fn.Directory.Name, "examples")
+		examplesExist, err := afero.IsDir(projectFS, examplesDir)
+		switch {
+		case err == nil, os.IsNotExist(err):
+		default:
+			return nil, errors.Wrap(err, "failed to check for examples")
+		}
+		if examplesExist {
+			examplesParser = parser.NewFsBackend(projectFS,
+				parser.FsDir(examplesDir),
+				parser.FsFilters(parser.SkipNotYAML()),
+			)
+		}
 	}
 
 	pp, err := pyaml.New()
@@ -448,28 +475,12 @@ func (b *realBuilder) buildFunction(ctx context.Context, projectFS, fromFS afero
 		examples.New(),
 	)
 
-	fnBuilder, err := b.functionIdentifier.Identify(fromFS, project.Spec.ImageConfigs)
+	runtimeImages, err := b.runtimeImages(ctx, projectFS, project, fn, basePath)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to find a builder")
-	}
-
-	if bfs, ok := fromFS.(*afero.BasePathFs); ok && basePath == "" {
-		basePath = afero.FullBaseFsPath(bfs, ".")
-	}
-
-	runtimeImages, err := fnBuilder.Build(ctx, functions.BuildContext{
-		ProjectFS:     projectFS,
-		FunctionPath:  filepath.Join(project.Spec.Paths.Functions, fnName),
-		SchemasPath:   project.Spec.Paths.Schemas,
-		Architectures: project.Spec.Architectures,
-		OSBasePath:    basePath,
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to build runtime images")
+		return nil, err
 	}
 
 	pkgImages := make([]v1.Image, 0, len(runtimeImages))
-
 	for _, img := range runtimeImages {
 		pkgImage, _, err := builder.Build(ctx, xpkg.WithBase(img))
 		if err != nil {
@@ -479,6 +490,168 @@ func (b *realBuilder) buildFunction(ctx context.Context, projectFS, fromFS afero
 	}
 
 	return pkgImages, nil
+}
+
+// runtimeImages returns the per-architecture runtime images for a function. For
+// Directory-source functions this dispatches to the appropriate builder. For
+// Tarball-source functions it loads the supplied OCI tarball.
+func (b *realBuilder) runtimeImages(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, fn devv1alpha1.Function, basePath string) ([]v1.Image, error) {
+	switch fn.Source {
+	case devv1alpha1.FunctionSourceDirectory:
+		return b.buildDirectoryRuntime(ctx, projectFS, project, fn.Directory, basePath)
+	case devv1alpha1.FunctionSourceTarball:
+		return loadTarballRuntime(projectFS, fn.Tarball, project.Spec.Architectures)
+	default:
+		// Should be caught at validation time, but be defensive.
+		return nil, errors.Errorf("unsupported function source %q", fn.Source)
+	}
+}
+
+// buildDirectoryRuntime invokes the appropriate language builder to produce
+// runtime images from a function's source directory.
+func (b *realBuilder) buildDirectoryRuntime(ctx context.Context, projectFS afero.Fs, project *devv1alpha1.Project, dir *devv1alpha1.FunctionDirectory, basePath string) ([]v1.Image, error) {
+	fnFS := afero.NewBasePathFs(projectFS, filepath.Join(project.Spec.Paths.Functions, dir.Name))
+
+	fnBasePath := ""
+	if basePath != "" {
+		fnBasePath = filepath.Join(basePath, project.Spec.Paths.Functions, dir.Name)
+	}
+	if bfs, ok := fnFS.(*afero.BasePathFs); ok && fnBasePath == "" {
+		fnBasePath = afero.FullBaseFsPath(bfs, ".")
+	}
+
+	fnBuilder, err := b.functionIdentifier.Identify(fnFS, project.Spec.ImageConfigs)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to find a builder")
+	}
+
+	imgs, err := fnBuilder.Build(ctx, functions.BuildContext{
+		ProjectFS:     projectFS,
+		FunctionPath:  filepath.Join(project.Spec.Paths.Functions, dir.Name),
+		SchemasPath:   project.Spec.Paths.Schemas,
+		Architectures: project.Spec.Architectures,
+		OSBasePath:    fnBasePath,
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to build runtime images")
+	}
+	return imgs, nil
+}
+
+// loadTarballRuntime reads one pre-built single-platform OCI image tarball per
+// target architecture. For each architecture it looks for, in order:
+//
+//   - <pathPrefix>-<arch>.tar
+//   - <pathPrefix>-<arch>.tar.gz
+//
+// The tarball format is the Docker-style image tarball produced by
+// `docker save`, Nix's dockerTools.buildImage, Bazel's oci_tarball,
+// `ko build --tarball`, etc. The gzipped variant is what most Nix image
+// builders emit by default.
+func loadTarballRuntime(projectFS afero.Fs, tb *devv1alpha1.FunctionTarball, architectures []string) ([]v1.Image, error) {
+	images := make([]v1.Image, 0, len(architectures))
+	for _, arch := range architectures {
+		img, rel, err := loadRuntimeImage(projectFS, tb.PathPrefix, arch)
+		if err != nil {
+			return nil, err
+		}
+
+		// The image's own config records the platform it was built for. If
+		// it doesn't match the architecture we expected based on the file
+		// name, the user has almost certainly made a packaging mistake;
+		// fail loudly rather than producing a multi-arch index that lies.
+		cfg, err := img.ConfigFile()
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to read config for runtime image %q", rel)
+		}
+		if cfg.Architecture != arch {
+			return nil, errors.Errorf("runtime image %q reports architecture %q but was expected to be %q", rel, cfg.Architecture, arch)
+		}
+
+		images = append(images, img)
+	}
+	return images, nil
+}
+
+// fsOpener returns a tarball.Opener that reads a plain tar file from the given
+// filesystem. tarball.Image calls its opener multiple times - once for the
+// manifest and once per layer - so each call returns a fresh reader positioned
+// at the start of the file.
+func fsOpener(fsys afero.Fs, path string) tarball.Opener {
+	return func() (io.ReadCloser, error) {
+		return fsys.Open(path)
+	}
+}
+
+// loadRuntimeImage loads the runtime image for a single architecture. It tries
+// each candidate tarball in turn, preferring the plain .tar over the gzipped
+// .tar.gz, and loads the first one that exists. It returns the loaded image and
+// the relative path it was loaded from (for error messages).
+//
+// The tarballs are read through the project filesystem rather than from a real
+// on-disk path, so loading works the same whether the project FS is an
+// afero.BasePathFs or an in-memory FS in tests.
+func loadRuntimeImage(projectFS afero.Fs, prefix, arch string) (v1.Image, string, error) {
+	candidates := []struct {
+		path   string
+		opener func(afero.Fs, string) tarball.Opener
+	}{
+		{path: fmt.Sprintf("%s-%s.tar", prefix, arch), opener: fsOpener},
+		{path: fmt.Sprintf("%s-%s.tar.gz", prefix, arch), opener: gzipOpener},
+	}
+
+	tried := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		tried = append(tried, c.path)
+
+		exists, err := afero.Exists(projectFS, c.path)
+		if err != nil {
+			return nil, c.path, errors.Wrapf(err, "failed to stat runtime image %q", c.path)
+		}
+		if !exists {
+			continue
+		}
+
+		img, err := tarball.Image(c.opener(projectFS, c.path), nil)
+		if err != nil {
+			return nil, c.path, errors.Wrapf(err, "failed to load runtime image for architecture %q from %q", arch, c.path)
+		}
+		return img, c.path, nil
+	}
+
+	return nil, tried[0], errors.Errorf("no runtime image found for architecture %q: looked for %v", arch, tried)
+}
+
+// gzipOpener returns a tarball.Opener that reads a gzipped tar file from the
+// given filesystem. Like fsOpener it can be called repeatedly; each call
+// returns a fresh decompressing reader that reads the file from the beginning.
+func gzipOpener(fsys afero.Fs, path string) tarball.Opener {
+	return func() (io.ReadCloser, error) {
+		f, err := fsys.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		return gzipReadCloser{Reader: gz, file: f}, nil
+	}
+}
+
+// gzipReadCloser ties together a gzip.Reader and the underlying file so that
+// closing the gzip reader also closes the file.
+type gzipReadCloser struct {
+	*gzip.Reader
+
+	file afero.File
+}
+
+// Close closes both the gzip reader and the underlying file, joining any errors
+// so neither failure is lost.
+func (g gzipReadCloser) Close() error {
+	return errors.Join(g.Reader.Close(), g.file.Close())
 }
 
 func collectResources(toFS afero.Fs, fromFS afero.Fs, gvks []string, exclude []string) error {

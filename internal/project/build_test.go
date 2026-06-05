@@ -17,11 +17,19 @@ limitations under the License.
 package project
 
 import (
+	"compress/gzip"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/spf13/afero"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -295,4 +303,345 @@ func tagsOf(m ImageTagMap) []string {
 		out = append(out, t.String())
 	}
 	return out
+}
+
+func TestResolveFunctions(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		spec    devv1alpha1.ProjectSpec
+		fnDirs  []string
+		fnFiles []string // files (not dirs) under the functions path; should be ignored.
+		want    []devv1alpha1.Function
+	}{
+		"ExplicitListWins": {
+			// When the project declares functions explicitly,
+			// auto-discovery is disabled and the list is returned verbatim.
+			spec: devv1alpha1.ProjectSpec{
+				Functions: []devv1alpha1.Function{
+					{Source: devv1alpha1.FunctionSourceDirectory, Directory: &devv1alpha1.FunctionDirectory{Name: "explicit"}},
+				},
+			},
+			fnDirs: []string{"would-be-discovered"},
+			want: []devv1alpha1.Function{
+				{Source: devv1alpha1.FunctionSourceDirectory, Directory: &devv1alpha1.FunctionDirectory{Name: "explicit"}},
+			},
+		},
+		"AutoDiscoverDirectories": {
+			// Every subdirectory of the functions path becomes a
+			// Directory-source function.
+			fnDirs: []string{"fn-a", "fn-b"},
+			want: []devv1alpha1.Function{
+				{Source: devv1alpha1.FunctionSourceDirectory, Directory: &devv1alpha1.FunctionDirectory{Name: "fn-a"}},
+				{Source: devv1alpha1.FunctionSourceDirectory, Directory: &devv1alpha1.FunctionDirectory{Name: "fn-b"}},
+			},
+		},
+		"AutoDiscoverIgnoresFiles": {
+			// Files directly under the functions path are not treated as
+			// functions; only subdirectories are.
+			fnDirs:  []string{"fn-real"},
+			fnFiles: []string{"README.md", "stray.tar"},
+			want: []devv1alpha1.Function{
+				{Source: devv1alpha1.FunctionSourceDirectory, Directory: &devv1alpha1.FunctionDirectory{Name: "fn-real"}},
+			},
+		},
+		"AutoDiscoverNoFunctionsDir": {
+			// A missing functions path is not an error; it just yields no
+			// functions.
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			projFS := afero.NewMemMapFs()
+			for _, d := range tc.fnDirs {
+				if err := projFS.MkdirAll(filepath.Join("functions", d), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, f := range tc.fnFiles {
+				if err := projFS.MkdirAll("functions", 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := afero.WriteFile(projFS, filepath.Join("functions", f), []byte("x"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			proj := &devv1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: "p"},
+				Spec:       tc.spec,
+			}
+			proj.Spec.Repository = "xpkg.crossplane.io/example/test"
+			proj.Default()
+
+			got, err := resolveFunctions(proj, projFS)
+			if err != nil {
+				t.Fatalf("resolveFunctions: %v", err)
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("resolveFunctions(...): -want, +got:\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestBuilderBuildExplicitFunctions(t *testing.T) {
+	t.Parallel()
+
+	projFS := afero.NewMemMapFs()
+	writeProject(t, projFS,
+		map[string]string{
+			"db.yaml":      xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase"),
+			"db-comp.yaml": compositionYAML("xdb", "acme.example.com", "XDatabase"),
+		},
+		// Auto-discovery would find fn-auto; explicit functions should
+		// override and only build fn-explicit.
+		[]string{"fn-auto", "fn-explicit"},
+	)
+
+	proj := &devv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		Spec: devv1alpha1.ProjectSpec{
+			Repository: "xpkg.crossplane.io/example/test",
+			Functions: []devv1alpha1.Function{{
+				Source:    devv1alpha1.FunctionSourceDirectory,
+				Directory: &devv1alpha1.FunctionDirectory{Name: "fn-explicit"},
+			}},
+		},
+	}
+	proj.Default()
+
+	imgMap, err := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier)).Build(t.Context(), proj, projFS)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// The configuration image plus per-arch images for fn-explicit. fn-auto
+	// must not appear because the explicit list disables auto-discovery.
+	want := map[string]bool{
+		proj.Spec.Repository:                  true,
+		proj.Spec.Repository + "_fn-explicit": true,
+	}
+	got := map[string]bool{}
+	for tag := range imgMap {
+		got[tag.Repository.Name()] = true
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Build(...) function repos: -want, +got:\n%s", diff)
+	}
+}
+
+func TestBuilderBuildTarballFunction(t *testing.T) {
+	t.Parallel()
+
+	// Build one single-platform Docker-style tarball per architecture, named
+	// using the <pathPrefix>-<arch>.tar convention.
+	projFS := afero.NewMemMapFs()
+	for _, arch := range []string{"amd64", "arm64"} {
+		writeRuntimeTar(t, projFS, "fn-prebuilt-"+arch+".tar", arch)
+	}
+
+	if err := projFS.MkdirAll("apis", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := afero.WriteFile(projFS, "apis/db.yaml", []byte(xrdYAML("acme.example.com", "xdatabases", "xdatabase", "XDatabase")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	proj := &devv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-project"},
+		Spec: devv1alpha1.ProjectSpec{
+			Repository:    "xpkg.crossplane.io/example/test",
+			Architectures: []string{"amd64", "arm64"},
+			Functions: []devv1alpha1.Function{{
+				Source:  devv1alpha1.FunctionSourceTarball,
+				Tarball: &devv1alpha1.FunctionTarball{Name: "fn-prebuilt", PathPrefix: "fn-prebuilt"},
+			}},
+		},
+	}
+	proj.Default()
+
+	imgMap, err := NewBuilder(BuildWithFunctionIdentifier(functions.FakeIdentifier)).Build(t.Context(), proj, projFS)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// The pre-built tarballs should produce one package image per target
+	// architecture under the function's derived repo.
+	wantRepo := proj.Spec.Repository + "_fn-prebuilt"
+	want := map[string]int{wantRepo: 2}
+	got := map[string]int{}
+	for tag := range imgMap {
+		got[tag.Repository.Name()]++
+	}
+	if diff := cmp.Diff(want, got, cmpopts.IgnoreMapEntries(func(k string, _ int) bool {
+		return k != wantRepo
+	})); diff != "" {
+		t.Errorf("Build(...) tarball function images: -want, +got:\n%s", diff)
+	}
+}
+
+func TestLoadTarballRuntime(t *testing.T) {
+	t.Parallel()
+
+	type args struct {
+		// files maps relative file names under the project root to the
+		// architecture the runtime image they contain should report.
+		files map[string]string
+		archs []string
+	}
+	type want struct {
+		archs []string
+		err   error
+	}
+
+	tcs := map[string]struct {
+		args args
+		want want
+	}{
+		"AllArchitecturesPresent": {
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar": "amd64",
+					"fn-arm64.tar": "arm64",
+				},
+				archs: []string{"amd64", "arm64"},
+			},
+			want: want{archs: []string{"amd64", "arm64"}},
+		},
+		"MissingArchitectureFile": {
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar": "amd64",
+				},
+				archs: []string{"amd64", "arm64"},
+			},
+			want: want{err: cmpopts.AnyError},
+		},
+		"ArchitectureMismatch": {
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar": "arm64",
+				},
+				archs: []string{"amd64"},
+			},
+			want: want{err: cmpopts.AnyError},
+		},
+		"SingleArchitecture": {
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar": "amd64",
+				},
+				archs: []string{"amd64"},
+			},
+			want: want{archs: []string{"amd64"}},
+		},
+		"GzippedTarball": {
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar.gz": "amd64",
+				},
+				archs: []string{"amd64"},
+			},
+			want: want{archs: []string{"amd64"}},
+		},
+		"MixedPlainAndGzipped": {
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar":    "amd64",
+					"fn-arm64.tar.gz": "arm64",
+				},
+				archs: []string{"amd64", "arm64"},
+			},
+			want: want{archs: []string{"amd64", "arm64"}},
+		},
+		"PlainPreferredOverGzipped": {
+			// When both .tar and .tar.gz exist for the same architecture,
+			// the plain .tar is used.
+			args: args{
+				files: map[string]string{
+					"fn-amd64.tar":    "amd64",
+					"fn-amd64.tar.gz": "arm64", // mismatched on purpose to prove it isn't read.
+				},
+				archs: []string{"amd64"},
+			},
+			want: want{archs: []string{"amd64"}},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			projFS := afero.NewMemMapFs()
+			for fname, arch := range tc.args.files {
+				writeRuntimeTar(t, projFS, fname, arch)
+			}
+
+			tb := &devv1alpha1.FunctionTarball{Name: "fn", PathPrefix: "fn"}
+			got, err := loadTarballRuntime(projFS, tb, tc.args.archs)
+
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("loadTarballRuntime(...): -want error, +got error:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.want.archs, archsOf(t, got), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("loadTarballRuntime(...) architectures: -want, +got:\n%s", diff)
+			}
+		})
+	}
+}
+
+// archsOf returns the architecture each image reports, in order.
+func archsOf(t *testing.T, imgs []v1.Image) []string {
+	t.Helper()
+
+	archs := make([]string, 0, len(imgs))
+	for _, img := range imgs {
+		cfg, err := img.ConfigFile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		archs = append(archs, cfg.Architecture)
+	}
+	return archs
+}
+
+// writeRuntimeTar writes a single-platform Docker-style image tarball to the
+// given path on fsys containing an empty image whose config records the given
+// architecture. If the path ends with ".tar.gz" the tarball is gzipped.
+func writeRuntimeTar(t *testing.T, fsys afero.Fs, path, arch string) {
+	t.Helper()
+
+	img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{OS: "linux", Architecture: arch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag, err := name.NewTag("crossplane.io/test:" + arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := fsys.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	if !strings.HasSuffix(path, ".gz") {
+		if err := tarball.Write(tag, img, f); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	gz := gzip.NewWriter(f)
+	if err := tarball.Write(tag, img, gz); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
 }

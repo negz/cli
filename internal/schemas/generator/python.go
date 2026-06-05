@@ -37,6 +37,7 @@ import (
 
 	xpv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
+	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/crd"
 	"github.com/crossplane/cli/v2/internal/filesystem"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
@@ -55,7 +56,7 @@ var importRE = regexp.MustCompile(`^(from\s+)(\.*)([^\s]+)(.*)`)
 type pythonGenerator struct{}
 
 func (pythonGenerator) Language() string {
-	return "python"
+	return devv1alpha1.SchemaLanguagePython
 }
 
 // GenerateFromCRD generates Python schema files from the XRDs and CRDs fromFS.

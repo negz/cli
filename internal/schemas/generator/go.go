@@ -47,6 +47,7 @@ import (
 
 	xpv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 
+	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/crd"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 )
@@ -140,7 +141,7 @@ var (
 type goGenerator struct{}
 
 func (goGenerator) Language() string {
-	return "go"
+	return devv1alpha1.SchemaLanguageGo
 }
 
 // GenerateFromCRD generates Go schemas for the CRDs in the given filesystem.

@@ -31,13 +31,14 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	devv1alpha1 "github.com/crossplane/cli/v2/apis/dev/v1alpha1"
 	"github.com/crossplane/cli/v2/internal/schemas/runner"
 )
 
 type jsonGenerator struct{}
 
 func (jsonGenerator) Language() string {
-	return "json"
+	return devv1alpha1.SchemaLanguageJSON
 }
 
 // GenerateFromCRD generates jsonschemas for the CRDs in the given filesystem.

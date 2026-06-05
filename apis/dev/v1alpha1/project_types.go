@@ -33,6 +33,39 @@ const (
 	DependencyTypeXpkg = "xpkg"
 )
 
+// Function source constants.
+const (
+	// FunctionSourceDirectory indicates a function whose source code lives in
+	// a directory under the project's functions path. The CLI builds the
+	// runtime image from this source.
+	FunctionSourceDirectory = "Directory"
+	// FunctionSourceTarball indicates a function whose runtime image is
+	// supplied as a pre-built OCI image tarball. The CLI skips building and
+	// uses the tarball as the runtime image.
+	FunctionSourceTarball = "Tarball"
+)
+
+// Schema language constants. These are the values accepted in
+// ProjectSchemas.Languages. Each corresponds to a schema generator in
+// internal/schemas/generator.
+const (
+	SchemaLanguageGo     = "go"
+	SchemaLanguageJSON   = "json"
+	SchemaLanguageKCL    = "kcl"
+	SchemaLanguagePython = "python"
+)
+
+// SupportedSchemaLanguages returns the set of language identifiers accepted
+// in ProjectSchemas.Languages.
+func SupportedSchemaLanguages() []string {
+	return []string{
+		SchemaLanguageGo,
+		SchemaLanguageJSON,
+		SchemaLanguageKCL,
+		SchemaLanguagePython,
+	}
+}
+
 // Project defines a Crossplane Project, which can be built into a Crossplane
 // Configuration package.
 //
@@ -64,11 +97,20 @@ type ProjectSpec struct {
 	Crossplane *pkgmetav1.CrossplaneConstraints `json:"crossplane,omitempty"`
 	// Dependencies are built-time and runtime dependencies of the project.
 	Dependencies []Dependency `json:"dependencies,omitempty"`
+	// Functions explicitly declares the embedded functions in this project.
+	// If specified, automatic discovery of functions under the functions path
+	// is disabled and only the functions listed here will be built and
+	// packaged. If omitted, all subdirectories of the functions path are
+	// treated as Directory-source functions and built automatically.
+	Functions []Function `json:"functions,omitempty"`
 	// Paths defines the relative paths to various parts of the project.
 	Paths *ProjectPaths `json:"paths,omitempty"`
 	// Architectures indicates for which architectures embedded functions should
 	// be built. If not specified, it defaults to [amd64, arm64].
 	Architectures []string `json:"architectures,omitempty"`
+	// Schemas configures language-specific schema generation for the
+	// project's XRDs and declared dependencies.
+	Schemas *ProjectSchemas `json:"schemas,omitempty"`
 	// ImageConfigs configure how images are fetched during
 	// development. Currently, only rewriting is supported; other options will
 	// be silently ignored. Note that these configs are for development only;
@@ -85,6 +127,24 @@ type ProjectPackageMetadata struct {
 	License     string `json:"license,omitempty"`
 	Description string `json:"description,omitempty"`
 	Readme      string `json:"readme,omitempty"`
+}
+
+// ProjectSchemas configures language-specific schema generation. Schemas are
+// produced both for the project's own XRDs and for its declared dependencies.
+type ProjectSchemas struct {
+	// Languages restricts schema generation to the listed languages.
+	// Supported values are "go", "json", "kcl", and "python". If not
+	// specified, schemas are generated for all supported languages.
+	Languages []string `json:"languages,omitempty"`
+}
+
+// GetLanguages returns the configured schema languages, or nil if no Schemas
+// config is set. It is safe to call on a nil receiver.
+func (s *ProjectSchemas) GetLanguages() []string {
+	if s == nil {
+		return nil
+	}
+	return s.Languages
 }
 
 // ProjectPaths configures the locations of various parts of the project, for
@@ -185,4 +245,78 @@ type HTTPDependency struct {
 type K8sDependency struct {
 	// Version is the Kubernetes API version (e.g., "v1.33.0").
 	Version string `json:"version"`
+}
+
+// Function explicitly declares an embedded function in a Crossplane project.
+// The Source field is the discriminator that determines which sub-field is
+// relevant.
+type Function struct {
+	// Source defines how the function's runtime image is supplied.
+	// +kubebuilder:validation:Enum=Directory;Tarball
+	Source string `json:"source"`
+
+	// Directory describes a function whose source code lives in a directory
+	// under the project's functions path. The CLI builds the runtime image
+	// from this source. Only used when Source is "Directory".
+	// +optional
+	Directory *FunctionDirectory `json:"directory,omitempty"`
+
+	// Tarball describes a function whose runtime image is supplied as a
+	// pre-built OCI image tarball. Only used when Source is "Tarball".
+	// +optional
+	Tarball *FunctionTarball `json:"tarball,omitempty"`
+}
+
+// Name returns the name of the function, derived from the source-specific
+// fields.
+func (f *Function) Name() string {
+	if f == nil {
+		return ""
+	}
+	switch f.Source {
+	case FunctionSourceDirectory:
+		if f.Directory == nil {
+			return ""
+		}
+		return f.Directory.Name
+	case FunctionSourceTarball:
+		if f.Tarball == nil {
+			return ""
+		}
+		return f.Tarball.Name
+	}
+	return ""
+}
+
+// FunctionDirectory describes a function whose source code lives in a
+// directory under the project's functions path.
+type FunctionDirectory struct {
+	// Name is the name of the function. It must match the name of a
+	// subdirectory under the project's functions path.
+	Name string `json:"name"`
+}
+
+// FunctionTarball describes a function whose runtime images are supplied as
+// pre-built single-platform OCI image tarballs (as produced by `docker save`,
+// Nix's dockerTools.buildImage, Bazel's oci_tarball, ko --tarball, etc.).
+//
+// The CLI expects one tarball per target architecture, named according to
+// the convention `<pathPrefix>-<arch>.tar` or `<pathPrefix>-<arch>.tar.gz`,
+// resolved relative to the project root. The CLI prefers the plain `.tar`
+// when both are present. For example, with PathPrefix "build/function-b" and
+// project architectures [amd64, arm64], the CLI looks for:
+//
+//	build/function-b-amd64.tar (or .tar.gz)
+//	build/function-b-arm64.tar (or .tar.gz)
+type FunctionTarball struct {
+	// Name is the name of the function. It is used to derive the OCI
+	// repository for the function's package as `<project-repository>_<name>`.
+	Name string `json:"name"`
+
+	// PathPrefix is the prefix of the per-architecture runtime image
+	// tarballs, relative to the project root. For each target architecture
+	// the CLI loads either `<pathPrefix>-<arch>.tar` or
+	// `<pathPrefix>-<arch>.tar.gz`, preferring the former when both are
+	// present.
+	PathPrefix string `json:"pathPrefix"`
 }

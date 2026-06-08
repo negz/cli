@@ -41,7 +41,7 @@ type patchCmd struct {
 	OutputFile string `help:"The file to write the patched XR YAML to. Defaults to stdout." placeholder:"PATH" predictor:"file" short:"o" type:"path"`
 
 	// Patching flags.
-	XRD string `help:"A YAML file specifying the CompositeResourceDefinition (XRD) whose schema defaults are applied to the XR." name:"xrd" placeholder:"PATH" predictor:"file" type:"path"`
+	XRD string `help:"A YAML file specifying the CompositeResourceDefinition (XRD) that provides schema defaults for the XR." name:"xrd" placeholder:"PATH" predictor:"file" type:"path"`
 
 	fs afero.Fs
 }

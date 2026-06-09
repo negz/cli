@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -169,16 +168,9 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 	}
 
 	var network string
-	for _, annotation := range c.FunctionAnnotations {
-		parts := strings.SplitN(annotation, "=", 2)
-		if len(parts) != 2 {
-			return errors.Errorf("invalid function annotation format %q, expected key=value", annotation)
-		}
-		key, value := parts[0], parts[1]
-		if key == render.AnnotationKeyRuntimeDockerNetwork {
-			network = value
-			break
-		}
+	annotations := render.NewAnnotationsFromStrings(c.FunctionAnnotations)
+	if value, ok := annotations[render.AnnotationKeyRuntimeDockerNetwork]; ok {
+		network = value
 	}
 
 	engine := c.newEngine(&c.EngineFlags, network, log)

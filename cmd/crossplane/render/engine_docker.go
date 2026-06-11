@@ -84,26 +84,25 @@ func (e *dockerRenderEngine) CheckContextSupport() error {
 func (e *dockerRenderEngine) Setup(ctx context.Context, fns []pkgv1.Function) (func(), error) {
 	var networkID, networkName string
 
-	if e.network == "" {
-		var err error
-		networkID, networkName, err = createRenderNetwork(ctx)
-		if err != nil {
-			return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
-		}
-		e.network = networkName
-
-		injectNetworkAnnotation(fns, networkName)
-
-		cleanup := func() { //nolint:contextcheck // Detached context for cleanup.
-			_ = removeRenderNetwork(context.Background(), networkID)
-		}
-
-		return cleanup, nil
+	if e.network != "" {
+		// e.network was pre-configured, we don't own the network, so there is nothing to clean up.
+		return func() {}, nil
 	}
 
-	// e.network was pre-configured by the caller (e.g. from a function
-	// annotation). We don't own the network, so there is nothing to clean up.
-	return func() {}, nil
+	var err error
+	networkID, networkName, err = createRenderNetwork(ctx)
+	if err != nil {
+		return func() {}, errors.Wrap(err, "cannot create Docker network for rendering")
+	}
+	e.network = networkName
+
+	injectNetworkAnnotation(fns, networkName)
+
+	cleanup := func() { //nolint:contextcheck // Detached context for cleanup.
+		_ = removeRenderNetwork(context.Background(), networkID)
+	}
+
+	return cleanup, nil
 }
 
 // Render marshals the request, runs it through a Docker container, and returns

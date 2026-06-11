@@ -84,7 +84,7 @@ type Cmd struct {
 	fs afero.Fs
 
 	// newEngine constructs the render Engine.
-	newEngine func(*render.EngineFlags, string, logging.Logger) render.Engine
+	newEngine func(*render.EngineFlags, logging.Logger) render.Engine
 }
 
 // Help prints out the help for the alpha render op command.
@@ -167,13 +167,25 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		}
 	}
 
-	var network string
-	annotations := render.NewAnnotationsFromStrings(c.FunctionAnnotations)
-	if value, ok := annotations[render.AnnotationKeyRuntimeDockerNetwork]; ok {
-		network = value
+	if c.EngineFlags.CrossplaneDockerNetwork == "" {
+		// Default to the first docker-network annotation in the provided functions
+		for _, fn := range fns {
+			if value, ok := fn.Annotations[render.AnnotationKeyRuntimeDockerNetwork]; ok {
+				c.CrossplaneDockerNetwork = value
+				break
+			}
+		}
+
+		// Overwrite with docker-network annotation from function-annotations cli flag if set
+		if len(c.FunctionAnnotations) > 0 {
+			annotations := render.NewAnnotationsFromStrings(c.FunctionAnnotations)
+			if value, ok := annotations[render.AnnotationKeyRuntimeDockerNetwork]; ok {
+				c.EngineFlags.CrossplaneDockerNetwork = value
+			}
+		}
 	}
 
-	engine := c.newEngine(&c.EngineFlags, network, log)
+	engine := c.newEngine(&c.EngineFlags, log)
 
 	seedCtx := len(c.ContextValues) > 0 || len(c.ContextFiles) > 0
 	captureCtx := c.IncludeContext
@@ -404,6 +416,5 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	}); err != nil {
 		return nil, errors.Wrap(err, "cannot build embedded functions")
 	}
-
 	return fns, nil
 }

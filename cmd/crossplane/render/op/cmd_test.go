@@ -63,8 +63,8 @@ var includeFunctionResultsOutput string
 //go:embed testdata/cmd/output/include-full-operation.yaml
 var includeFullOperationOutput string
 
-func newEngineFunc(engine render.Engine) func(*render.EngineFlags, string, logging.Logger) render.Engine {
-	return func(*render.EngineFlags, string, logging.Logger) render.Engine {
+func newEngineFunc(engine render.Engine) func(*render.EngineFlags, logging.Logger) render.Engine {
+	return func(*render.EngineFlags, logging.Logger) render.Engine {
 		return engine
 	}
 }

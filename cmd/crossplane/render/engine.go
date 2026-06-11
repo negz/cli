@@ -58,9 +58,10 @@ type Engine interface {
 // EngineFlags contains flags for configuring the render engine. It is embedded
 // by render command structs to provide shared engine configuration.
 type EngineFlags struct {
-	CrossplaneVersion string `help:"Version of the Crossplane image to use for rendering. Defaults to the latest stable version." placeholder:"VERSION" xor:"crossplane-selector"`
-	CrossplaneImage   string `help:"Override the full Crossplane Docker image reference for rendering."                           placeholder:"IMAGE"   xor:"crossplane-selector"`
-	CrossplaneBinary  string `help:"Path to a local crossplane binary to use instead of Docker."                                  placeholder:"PATH"    type:"existingfile"       xor:"crossplane-selector"`
+	CrossplaneVersion       string `help:"Version of the Crossplane image to use for rendering. Defaults to the latest stable version." placeholder:"VERSION" xor:"crossplane-selector"`
+	CrossplaneImage         string `help:"Override the full Crossplane Docker image reference for rendering."                           placeholder:"IMAGE"   xor:"crossplane-selector"`
+	CrossplaneBinary        string `help:"Path to a local crossplane binary to use instead of Docker."                                  placeholder:"PATH"    type:"existingfile"       xor:"crossplane-selector,crossplane-docker"`
+	CrossplaneDockerNetwork string `help:"The docker network to start the crossplane container in"                                      xor:"crossplane-docker"`
 }
 
 // NewEngineFromFlags creates an Engine from the flag configuration. If a binary
@@ -68,12 +69,12 @@ type EngineFlags struct {
 // using the resolved image reference. The network parameter sets the Docker
 // network the render container should join; it is derived from function
 // annotations (AnnotationKeyRuntimeDockerNetwork) by the caller.
-func NewEngineFromFlags(f *EngineFlags, network string, log logging.Logger) Engine {
+func NewEngineFromFlags(f *EngineFlags, log logging.Logger) Engine {
 	if f.CrossplaneBinary != "" {
 		return &localRenderEngine{BinaryPath: f.CrossplaneBinary}
 	}
 
-	return &dockerRenderEngine{image: crossplaneImageFromFlags(f), network: network, log: log}
+	return &dockerRenderEngine{image: crossplaneImageFromFlags(f), network: f.CrossplaneDockerNetwork, log: log}
 }
 
 func crossplaneImageFromFlags(f *EngineFlags) string {

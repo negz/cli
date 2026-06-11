@@ -416,5 +416,6 @@ func (c *Cmd) loadFunctions(ctx context.Context, log logging.Logger, sp terminal
 	}); err != nil {
 		return nil, errors.Wrap(err, "cannot build embedded functions")
 	}
+
 	return fns, nil
 }

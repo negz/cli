@@ -66,9 +66,7 @@ type EngineFlags struct {
 
 // NewEngineFromFlags creates an Engine from the flag configuration. If a binary
 // path is set, it returns a local engine. Otherwise it returns a Docker engine
-// using the resolved image reference. The network parameter sets the Docker
-// network the render container should join; it is derived from function
-// annotations (AnnotationKeyRuntimeDockerNetwork) by the caller.
+// using the resolved image reference.
 func NewEngineFromFlags(f *EngineFlags, log logging.Logger) Engine {
 	if f.CrossplaneBinary != "" {
 		return &localRenderEngine{BinaryPath: f.CrossplaneBinary}

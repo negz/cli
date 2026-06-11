@@ -171,7 +171,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		// Default to the first docker-network annotation in the provided functions
 		for _, fn := range fns {
 			if value, ok := fn.Annotations[render.AnnotationKeyRuntimeDockerNetwork]; ok {
-				c.CrossplaneDockerNetwork = value
+				c.EngineFlags.CrossplaneDockerNetwork = value
 				break
 			}
 		}
@@ -180,7 +180,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger, sp terminal.SpinnerPrinte
 		if len(c.FunctionAnnotations) > 0 {
 			annotations := render.NewAnnotationsFromStrings(c.FunctionAnnotations)
 			if value, ok := annotations[render.AnnotationKeyRuntimeDockerNetwork]; ok {
-				c.CrossplaneDockerNetwork = value
+				c.EngineFlags.CrossplaneDockerNetwork = value
 			}
 		}
 	}

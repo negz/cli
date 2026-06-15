@@ -128,6 +128,17 @@ func modifyCRDManifestFields(crd *extv1.CustomResourceDefinition) {
 			updateSchemaPropertiesXEmbeddedResource(version.Schema.OpenAPIV3Schema)
 			crd.Spec.Versions[i].Schema.OpenAPIV3Schema.Properties = version.Schema.OpenAPIV3Schema.Properties
 		}
+
+		// The scale subresource is a runtime API behaviour, not part of the
+		// resource's structural schema. But BuildOpenAPIV3 models the whole REST
+		// surface, so declaring it adds a /scale endpoint whose request and
+		// response body is an autoscaling/v1 Scale. That pulls the Scale,
+		// ScaleSpec, and ScaleStatus schemas into the resource's components,
+		// which the language generators then model in place of the resource
+		// itself. Drop it before building the OpenAPI spec.
+		if version.Subresources != nil {
+			crd.Spec.Versions[i].Subresources.Scale = nil
+		}
 	}
 }
 

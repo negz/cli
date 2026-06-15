@@ -17,6 +17,7 @@ limitations under the License.
 package crd
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -107,6 +108,114 @@ spec:
 			kindDefault := openapi.Components.Schemas["io.crossplane.fn.template.v1beta1.KCLInput"].SchemaProps.Properties["kind"].Default
 			if diff := cmp.Diff("KCLInput", kindDefault); diff != "" {
 				t.Errorf("kind default (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestToOpenAPI(t *testing.T) {
+	t.Parallel()
+
+	scaleCRD := []byte(`
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: testresources.testgroup.example.com
+spec:
+  group: testgroup.example.com
+  names:
+    kind: TestResource
+    plural: testresources
+  scope: Namespaced
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+      scale:
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              replicas:
+                type: integer
+          status:
+            type: object
+            properties:
+              replicas:
+                type: integer
+`)
+
+	tests := []struct {
+		name       string
+		crdContent []byte
+		version    string
+		// wantSchemas is the exact set of component schema names the version's
+		// OpenAPI document should contain, sorted.
+		wantSchemas []string
+	}{
+		{
+			// The scale subresource adds a /scale endpoint whose request and
+			// response body is an autoscaling/v1 Scale. Building the OpenAPI for
+			// it must not pull the Scale types into the resource's components,
+			// where they would be modelled in place of the resource itself. The
+			// document holds the resource, its list, and the meta types the
+			// builder always emits - and nothing from autoscaling/v1.
+			name:       "ScaleSubresourceDoesNotLeakAutoscalingTypes",
+			crdContent: scaleCRD,
+			version:    "v1",
+			wantSchemas: []string{
+				"com.example.testgroup.v1.",
+				"com.example.testgroup.v1.TestResource",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.FieldsV1",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.ManagedFieldsEntry",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.OwnerReference",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.Patch",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.Preconditions",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.Status",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.StatusCause",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.StatusDetails",
+				"io.k8s.apimachinery.pkg.apis.meta.v1.Time",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var crd extv1.CustomResourceDefinition
+			if err := yaml.Unmarshal(tt.crdContent, &crd); err != nil {
+				t.Fatalf("failed to unmarshal CRD: %v", err)
+			}
+
+			out, err := ToOpenAPI(&crd)
+			if err != nil {
+				t.Fatalf("ToOpenAPI() error: %v", err)
+			}
+
+			oapi, ok := out[tt.version]
+			if !ok {
+				t.Fatalf("ToOpenAPI() returned no %q output", tt.version)
+			}
+
+			gotSchemas := make([]string, 0, len(oapi.Components.Schemas))
+			for name := range oapi.Components.Schemas {
+				gotSchemas = append(gotSchemas, name)
+			}
+			sort.Strings(gotSchemas)
+
+			if diff := cmp.Diff(tt.wantSchemas, gotSchemas); diff != "" {
+				t.Errorf("ToOpenAPI() component schemas (-want +got):\n%s", diff)
 			}
 		})
 	}

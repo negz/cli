@@ -31,7 +31,7 @@ import (
 
 // SetDefaultCrossplaneDockerNetwork defaults the Crossplane render engine's
 // Docker network to the first function runtime Docker network annotation.
-// If network is already set, return with no changes
+// If network is already set, return with no changes.
 func (f *EngineFlags) SetDefaultCrossplaneDockerNetwork(fns []pkgv1.Function) {
 	if f.CrossplaneDockerNetwork != "" {
 		return

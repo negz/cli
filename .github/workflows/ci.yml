@@ -260,11 +260,9 @@ jobs:
         with:
           token: ${{ steps.generate-token.outputs.token }}
           path: ./docs
-          commit-message: |
-            Update master CLI reference docs for ${{ needs.build-artifacts.outputs.version }}
-
-            Signed-off-by: cli-docs-bot <info@crossplane.io>
+          commit-message: Update master CLI reference docs for ${{ needs.build-artifacts.outputs.version }}
           author: cli-docs-bot <info@crossplane.io>
+          signoff: true
           title: Update master CLI reference docs for ${{ needs.build-artifacts.outputs.version }}
           # We use a static branch name so that if an existing PR is already
           # open it gets updated, rather than opening a sequence of PRs of which
